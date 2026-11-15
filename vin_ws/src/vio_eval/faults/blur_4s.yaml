@@ -1,0 +1,8 @@
+# Horizontal motion blur, 15 px, for 4 s mid-flight
+seed: 1
+faults:
+  - type: blur
+    start_after_arm_s: 10.0
+    duration_s: 4.0
+    size: 15
+    kind: motion

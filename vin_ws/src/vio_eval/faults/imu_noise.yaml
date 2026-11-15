@@ -1,0 +1,8 @@
+# Extra IMU white noise for 5 s mid-flight, about 7x the noise OpenVINS is told to expect
+seed: 1
+faults:
+  - type: imu_noise
+    start_after_arm_s: 10.0
+    duration_s: 5.0
+    accel_sigma: 0.2      # m/s^2 per sample
+    gyro_sigma: 0.02      # rad/s per sample

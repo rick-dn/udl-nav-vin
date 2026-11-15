@@ -15,7 +15,8 @@ Work in progress.
 - [x] OpenVINS tracking the test flight
 - [x] Evaluation tool: record a run, score it against ground truth (ATE / RPE / scale)
 - [ ] Baseline accuracy over a set of flights (first square: 3 cm ATE, see below)
-- [ ] Bag record / replay with fault injection
+- [x] Bag record / replay (replays are repeatable to under a millimetre)
+- [x] Fault injection on replayed bags
 - [ ] Stress tests: time offset, IMU noise, dropped frames, blur, darkness
 - [ ] Downward rangefinder fused inside OpenVINS
 - [ ] Loosely coupled ESKF on top of OpenVINS
@@ -33,7 +34,7 @@ vin_ws/
   config/openvins_sim/      OpenVINS config for the sim camera and IMU
   src/gz_imu_bridge/        Gazebo IMU -> ROS 2 (see docs for why this exists)
   src/vio_flight/           scripted test flight over MAVROS
-  src/vio_eval/             record a run, score it against ground truth
+  src/vio_eval/             record, replay and score runs against ground truth
 runs/                       sim logs and recorded runs (not in git)
 results/                    plots and numbers worth keeping, per stage
 docs/
@@ -119,6 +120,41 @@ bash scripts/start_vio_sim.sh --stop
 
 `--stop` doesn't touch OpenVINS. Stop it with Ctrl-C in its own terminal, and if it hangs, which it sometimes does, use `pkill -x run_subscribe_m`.
 
+### Recording a flight and replaying it
+
+To test anything on the same flight more than once, record a bag during the flight. In another terminal, with the sim running and the drone still on the ground:
+
+```bash
+cd vin_ws/src/vio_eval
+bash record_bag.sh square_02
+```
+
+It records the camera, the VIO IMU, ground truth and the MAVROS state to `runs/bags/<name>/`, stamped in sim time. Ctrl-C it after landing, before stopping the sim. A square flight is about 600-900 MB.
+
+Then, with the sim and OpenVINS stopped, replay it. This starts OpenVINS, records the run like a live one, plays the bag and stops everything again:
+
+```bash
+cd vin_ws/src/vio_eval
+bash replay_run.sh square_02 square_02_replay1      # add --rviz to watch it
+python3 score_run.py square_02_replay1
+```
+
+Logs go to `runs/replay_logs/<run_name>/`. A replay runs at sim speed, about twice as fast as flying live.
+
+### Injecting faults
+
+Add `--faults` to a replay to corrupt the IMU or camera on the way into OpenVINS. The bag itself isn't changed:
+
+```bash
+cd vin_ws/src/vio_eval
+bash replay_run.sh square_02 square_02_f_dark --faults dark_4s
+python3 score_run.py square_02_f_dark
+```
+
+Scenarios are small YAML files in `vin_ws/src/vio_eval/faults/` (`none`, `imu_noise`, `imu_bias_step`, `time_offset_20ms`, `frame_drop_1s`, `frame_freeze_2s`, `dark_4s`, `blur_4s`). Each says which fault, how strong, and when, counted from arming. The full list of fault types is at the top of `fault_injector.py`. The scenario and a log of when each fault was active are copied into the run folder, and the scorer shades the fault on the plots.
+
+For a run with faults, the scorer aligns on the clean part before the first fault. To compare against a clean run of the same bag, score the clean one on the same stretch with `--align-window <seconds>`.
+
 ## Goal so far
 
 Get monocular visual-inertial odometry tracking a drone in a realistic SITL setup, and measure how accurate it is.
@@ -139,6 +175,8 @@ Get monocular visual-inertial odometry tracking a drone in a realistic SITL setu
   That's with a perfect sim camera and IMU, so it's a best case. More in [results/baseline](results/baseline/).
 
   ![square_01 baseline](results/baseline/square_01_score.png)
+- **Bag record and replay.** A flight is recorded once and replayed into OpenVINS without the sim. Replays of the same bag are identical to under a millimetre, and replay agrees with the live run to about 6 mm in ATE (`square_02`: 3.8 cm live, 3.2 cm replayed). So comparisons are done replay against replay.
+- **Fault injection.** A node between the bag and OpenVINS corrupts the IMU or camera on replay. IMU noise, a 1 s camera dropout, an IMU bias step and a 20 ms time offset degrade the estimate but it holds (5 cm to 14 cm ATE, against 4.7 cm clean). Blurred, dark and frozen frames break it: 7 m, 124 m and 171 m ATE. A frozen camera fools the zero-velocity update into thinking the drone has stopped. In every run that diverged, OpenVINS's own 3-sigma stayed far below the real error. More in [results/faults](results/faults/).
 - **A finding.** OpenVINS's own 3-sigma was about 10x the real error. The filter misjudges how much it can trust itself, which matters for anything that relies on its covariance.
 - **One-command sim.** Start and stop scripts for the whole sim, plus docs on how it works and the maths behind it.
 

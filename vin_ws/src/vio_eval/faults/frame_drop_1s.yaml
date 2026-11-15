@@ -1,0 +1,7 @@
+# Camera drops out completely for 1 s mid-flight
+seed: 1
+faults:
+  - type: frame_drop
+    start_after_arm_s: 10.0
+    duration_s: 1.0
+    probability: 1.0

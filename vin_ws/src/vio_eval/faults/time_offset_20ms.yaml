@@ -1,0 +1,6 @@
+# Camera timestamps 20 ms late from arming onwards (time offset calibration is off)
+seed: 1
+faults:
+  - type: time_offset
+    start_after_arm_s: 0.0
+    offset_s: 0.020

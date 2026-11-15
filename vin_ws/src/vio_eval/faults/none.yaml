@@ -1,0 +1,4 @@
+# No faults: everything passes straight through. Used to check the injector
+# itself doesn't change the result.
+seed: 1
+faults: []

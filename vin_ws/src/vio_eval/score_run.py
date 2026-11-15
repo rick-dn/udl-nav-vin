@@ -11,6 +11,9 @@ Steps:
   3. Align the estimate to ground truth with yaw + translation (4 DoF). Gravity
      makes roll and pitch observable for VIO, so they are not aligned away.
      A separate similarity (Sim3) fit is done only to report the scale error.
+     If the run has a faults.csv (replayed with --faults), the fit uses only
+     the clean part before the first fault, and the fault windows are shaded
+     on the plots.
   4. ATE: position and rotation error after alignment.
      RPE: error of the relative motion over --rpe-dt seconds (no alignment needed).
 
@@ -31,6 +34,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 RUNS_DIR = Path(__file__).resolve().parents[3] / 'runs' / 'eval'
+MIN_ALIGN_S = 3.0   # shortest clean stretch before a fault worth aligning on
 
 
 def load_tum(path):
@@ -49,6 +53,31 @@ def disarm_time(events_path):
             elif was_armed:
                 return float(row['t'])
     return None
+
+
+def fault_windows(faults_path, t_end):
+    """(fault, t_start, t_end) from a faults.csv written by fault_injector.py.
+    A fault that never ended runs to t_end."""
+    windows, open_ = [], {}
+    with open(faults_path) as f:
+        for row in csv.DictReader(f):
+            if row['event'] == 'start':
+                open_[row['fault']] = float(row['t'])
+            elif row['event'] == 'end' and row['fault'] in open_:
+                windows.append((row['fault'], open_.pop(row['fault']), float(row['t'])))
+    windows += [(name, t0, t_end) for name, t0 in open_.items()]
+    return windows
+
+
+def shade_faults(ax, windows, t0, t1, label):
+    """Shade fault windows, clipped to the scored section [t0, t1]."""
+    colours = ['0.5', 'C1', 'C4', 'C8']
+    for k, (name, a, b) in enumerate(windows):
+        a, b = max(a, t0), min(b, t1)
+        if b <= a:
+            continue
+        ax.axvspan(a - t0, b - t0, color=colours[k % len(colours)], alpha=0.2,
+                   label=f'fault: {name}' if label else None)
 
 
 def align_yaw(p_est, p_gt):
@@ -101,6 +130,9 @@ def main():
     parser.add_argument('--start', type=float, help='start of scored section, sim time [s]')
     parser.add_argument('--end', type=float, help='end of scored section, sim time [s]')
     parser.add_argument('--rpe-dt', type=float, default=1.0, help='RPE interval [s], default 1.0')
+    parser.add_argument('--align-window', type=float,
+                        help='align on the first S seconds of the scored section only '
+                             '(use the same value to compare a clean run with faulted ones)')
     args = parser.parse_args()
 
     run = Path(args.name) if Path(args.name).is_dir() else RUNS_DIR / args.name
@@ -127,8 +159,28 @@ def main():
     p_gt = np.column_stack([np.interp(t, t_gt, p_gt_all[:, k]) for k in range(3)])
     R_gt = Slerp(t_gt, R_gt_all)(t)
 
+    # --- faults injected on replay, if any
+    windows = []
+    if (run / 'faults.csv').exists():
+        windows = fault_windows(run / 'faults.csv', float(t[-1]))
+
     # --- alignment
-    R_al, t_al, yaw = align_yaw(p_est, p_gt)
+    # With a fault, align only on the clean part before it starts: a run that
+    # diverges afterwards would otherwise drag the fit and hide where it broke.
+    align_mask = np.ones(len(t), bool)
+    aligned_on = 'whole run'
+    if args.align_window is not None:
+        align_mask = t < t[0] + args.align_window
+        aligned_on = f'first {args.align_window:.1f} s'
+        if align_mask.sum() < 10:
+            sys.exit(f'only {align_mask.sum()} poses in the first {args.align_window} s')
+    elif windows:
+        first = min(a for _, a, _ in windows)
+        pre = t < first
+        if pre.sum() >= 10 and first - t[0] >= MIN_ALIGN_S:
+            align_mask = pre
+            aligned_on = f'before first fault ({first - t[0]:.1f} s)'
+    R_al, t_al, yaw = align_yaw(p_est[align_mask], p_gt[align_mask])
     p_al = R_al.apply(p_est) + t_al
     R_est_al = R_al * R_est
     scale = umeyama_scale(p_est, p_gt)
@@ -147,6 +199,7 @@ def main():
         'num_poses': int(len(t)),
         'path_length_m': path_len,
         'align_yaw_deg': float(np.degrees(yaw)),
+        'aligned_on': aligned_on,
         'ate_rmse_m': rmse(err),
         'ate_mean_m': float(err.mean()),
         'ate_median_m': float(np.median(err)),
@@ -160,6 +213,9 @@ def main():
         'final_error_m': float(err[-1]),
         'final_error_pct_of_path': float(100.0 * err[-1] / path_len) if path_len > 0 else None,
     }
+    if windows:
+        metrics['faults'] = [{'fault': n, 'from_s': a, 'to_s': b} for n, a, b in windows]
+
     with open(run / 'metrics.json', 'w') as f:
         json.dump(metrics, f, indent=2)
 
@@ -200,7 +256,15 @@ def main():
     a.set_xlabel('t [s]'); a.set_ylabel('[deg]'); a.set_title('Rotation error')
     a.grid(True)
 
-    fig.suptitle(f'{run.name}: ATE {metrics["ate_rmse_m"]:.3f} m RMSE, '
+    # shade the time a fault was active on the time plots
+    if windows:
+        shade_faults(ax[0, 1], windows, t[0], t[-1], label=False)
+        shade_faults(ax[1, 0], windows, t[0], t[-1], label=True)
+        shade_faults(ax[1, 1], windows, t[0], t[-1], label=False)
+        ax[1, 0].legend()
+
+    fault_note = (' | faults: ' + ', '.join(sorted({n for n, _, _ in windows}))) if windows else ''
+    fig.suptitle(f'{run.name}{fault_note}\nATE {metrics["ate_rmse_m"]:.3f} m RMSE, '
                  f'scale error {metrics["scale_error_pct"]:+.1f}%, '
                  f'path {path_len:.1f} m')
     fig.tight_layout()
@@ -211,7 +275,9 @@ def main():
     print(f'run            {m["run"]}')
     print(f'scored         {m["scored_from_s"]:.2f} -> {m["scored_to_s"]:.2f} s sim '
           f'({m["duration_s"]:.1f} s, {m["num_poses"]} poses, path {m["path_length_m"]:.2f} m)')
-    print(f'alignment yaw  {m["align_yaw_deg"]:.1f} deg')
+    print(f'alignment yaw  {m["align_yaw_deg"]:.1f} deg, fitted on {m["aligned_on"]}')
+    for fw in m.get('faults', []):
+        print(f'fault          {fw["fault"]} {fw["from_s"]:.2f} -> {fw["to_s"]:.2f} s')
     print(f'ATE  position  rmse {m["ate_rmse_m"]:.3f}  mean {m["ate_mean_m"]:.3f}  '
           f'median {m["ate_median_m"]:.3f}  max {m["ate_max_m"]:.3f} m')
     print(f'ATE  rotation  rmse {m["ate_rot_rmse_deg"]:.2f} deg')

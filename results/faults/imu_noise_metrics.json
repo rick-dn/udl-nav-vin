@@ -1,0 +1,29 @@
+{
+  "run": "square_02_f_imu_noise",
+  "scored_from_s": 44.287,
+  "scored_to_s": 74.02,
+  "duration_s": 29.732999999999997,
+  "num_poses": 902,
+  "path_length_m": 11.838899574736164,
+  "align_yaw_deg": 179.9863110682891,
+  "aligned_on": "before first fault (6.7 s)",
+  "ate_rmse_m": 0.04987654348842573,
+  "ate_mean_m": 0.04879211424703945,
+  "ate_median_m": 0.04929175009188917,
+  "ate_max_m": 0.07416513002997682,
+  "ate_rot_rmse_deg": 0.41925169673367807,
+  "rpe_dt_s": 1.0,
+  "rpe_trans_rmse_m": 0.01999646733453816,
+  "rpe_rot_rmse_deg": 0.12878632364371867,
+  "scale": 1.0074791084700008,
+  "scale_error_pct": 0.7479108470000773,
+  "final_error_m": 0.048265234022070336,
+  "final_error_pct_of_path": 0.40768344825786695,
+  "faults": [
+    {
+      "fault": "imu_noise",
+      "from_s": 51.03,
+      "to_s": 56.03
+    }
+  ]
+}

@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
@@ -119,7 +120,9 @@ def main():
     node = RunRecorder(out_dir)
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # Ctrl-C in a terminal raises KeyboardInterrupt; a SIGINT from another
+        # process (replay_run.sh) can shut rclpy down first instead
         pass
     finally:
         print(f'saved {node.num_est} estimate and {node.num_gt} ground truth samples to {out_dir}')

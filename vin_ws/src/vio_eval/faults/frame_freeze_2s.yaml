@@ -1,0 +1,6 @@
+# Camera freezes on the last image for 2 s mid-flight
+seed: 1
+faults:
+  - type: frame_freeze
+    start_after_arm_s: 10.0
+    duration_s: 2.0

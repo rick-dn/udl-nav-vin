@@ -16,8 +16,8 @@ A multi-sensor, integrity-aware estimator for a drone flying where GNSS is jamme
 |---|---|---|---|---|
 | **M0** | **Tooling** | | | |
 | 0.1 | Recorder + scorer | Record a run, score vs ground truth (ATE / RPE / scale) | Claude | ✅ 3 cm ATE on first square |
-| 0.2 | Bag record / replay | Fly once, replay into the estimator without the sim | Claude | Replays agree with each other and with the live run |
-| 0.3 | Fault injector | IMU noise / bias, time offsets, dropped / frozen frames, blur, darkness | Claude | Each fault shown on one replay |
+| 0.2 | Bag record / replay | Fly once, replay into the estimator without the sim | Claude | ✅ Replays identical; 6 mm ATE from the live run |
+| 0.3 | Fault injector | IMU noise / bias, time offsets, dropped / frozen frames, blur, darkness | Claude | ✅ 7 faults on one bag; blur, darkness and frozen frames break OpenVINS |
 | 0.4 | Sim sensors | New model copy: GNSS, magnetometer, rangefinder, realistic camera and IMU noise | Claude | Topics in ROS 2 |
 | 0.5 | Flight set | Easy, medium, hard and weak-motion flights, recorded as bags | Shared (I fly) | Bags for all four |
 | 0.6 | Regression suite | Replay all bags, score, fail if worse than a threshold | Claude | One command, runs in CI |

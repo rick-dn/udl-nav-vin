@@ -1,0 +1,8 @@
+# Lights drop to 15% for 4 s mid-flight, with some sensor noise
+seed: 1
+faults:
+  - type: darkness
+    start_after_arm_s: 10.0
+    duration_s: 4.0
+    gain: 0.15
+    noise_sigma: 3.0

@@ -67,6 +67,42 @@ The maths is in the maths notes.
 
 The first run gave 3 cm ATE. Most of that comes from a 7 cm dip in height just after takeoff. OpenVINS's 3-sigma sits around 26 cm, roughly ten times the real error. It thinks it's much worse than it is, which fits with telling it the IMU is as noisy as EuRoC's when the sim IMU is perfect.
 
+## Replaying a flight
+
+Two live flights of the same script never come out quite the same. On two square flights OpenVINS scored 3.0 cm and 3.8 cm, and nothing had changed but the flight. That's a problem for any comparison: if a change to the estimator moves the error by a centimetre, it could just be the flight.
+
+So a flight is recorded once as a ROS 2 bag (`record_bag.sh`) and replayed as often as needed (`replay_run.sh`). The bag holds the camera, the VIO IMU, ground truth and the MAVROS state. It's stamped with sim time, so a replay runs at sim speed, about twice as fast as the live sim.
+
+Two details made this work:
+
+- The MAVROS state is published as "transient local", which means a subscriber that joins late still gets the last message. The recorder subscribes that way, so the bag has to record and replay it the same way, otherwise the takeoff and landing events disappear on replay. `qos_overrides.yaml` sets that.
+- `replay_run.sh` refuses to start if the sim or another OpenVINS is running, because their topics would mix with the bag's.
+
+How repeatable is it? Replaying the same bag three times gave the same trajectory to under a millimetre, so any difference bigger than that is real. Replay against the live run agreed to 6 mm in ATE, with poses a median 1.6 cm apart. The gap most likely comes from timing: live, the IMU samples that have arrived by the time each image is processed vary a little; replayed, they don't. So comparisons are always replay against replay on the same bag.
+
+## Injecting faults
+
+`fault_injector.py` is a small node that sits between a replayed bag and OpenVINS. With `--faults`, `replay_run.sh` renames the bag's IMU and camera topics to `/vio/raw/...` on playback, so OpenVINS doesn't hear them directly. The injector listens to the raw topics, changes or drops messages while a fault is active, and republishes them under the normal names. OpenVINS sees what looks like ordinary sensor data with the damage already done, which is how a real fault would look to it. Ground truth and the MAVROS state skip the injector, so the score always compares against the true path.
+
+What a fault does to a message:
+
+- IMU noise, bias or drift: add numbers to the accelerometer and gyro readings
+- time offset: add a fixed amount to each image's timestamp
+- dropped frame: don't publish it
+- frozen frame: publish the previous image's pixels with the current timestamp
+- darkness: scale every pixel down and add a little noise
+- blur: run a blur filter over the image
+
+Faults are timed from the arm event in the bag, so "10 s after arming" lands on the same moment of the flight in every replay. The random numbers come from a seeded generator, so a replay with a fault is as repeatable as one without. A replay through the injector with no faults gave exactly the same trajectory as a direct replay, so the extra node doesn't change anything by itself.
+
+One scoring detail: a run that diverges by hundreds of metres would drag the frame alignment and hide where it broke. So for runs with faults, the scorer aligns only on the clean part before the first fault, and the clean reference is scored on the same stretch (`--align-window`).
+
+What came out of the first round (numbers in `results/faults`):
+
+- IMU noise and a 1 s camera dropout barely matter. An IMU bias step and a 20 ms camera time offset roughly double or triple the error, but OpenVINS holds.
+- Blurred, dark and frozen frames break it. The frozen camera is the clearest case: the images stop changing, so OpenVINS decides the drone has stopped and applies zero-velocity updates for the whole freeze while the drone is actually flying. By the time real images come back its state is wrong and it runs away. That's the catch noted in the maths notes, now measured.
+- In every run that diverged, OpenVINS's own 3-sigma stayed far below the real error. It doesn't know it has failed. That's the gap the integrity work is meant to close.
+
 ## Start / stop script
 
 `start_vio_sim.sh --start` opens one terminal tab per process, in the same style as the older `start_all.sh`. ArduPilot runs from `runs/sitl` so its parameters and logs don't mix with other projects.

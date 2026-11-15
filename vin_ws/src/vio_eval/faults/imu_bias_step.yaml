@@ -1,0 +1,7 @@
+# Accelerometer and gyro bias jump 10 s after arming and stay
+seed: 1
+faults:
+  - type: imu_bias
+    start_after_arm_s: 10.0
+    accel: [0.1, 0.0, 0.0]     # m/s^2
+    gyro: [0.0, 0.0, 0.005]    # rad/s

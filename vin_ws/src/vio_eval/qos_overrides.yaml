@@ -1,0 +1,9 @@
+# QoS for topics that don't use the default profile, used by record_bag.sh
+# and replay_run.sh. MAVROS publishes its state as reliable + transient local
+# (late subscribers get the last message), and record_run.py subscribes the
+# same way, so the bag has to record and replay it like that too.
+/mavros/state:
+  history: keep_last
+  depth: 10
+  reliability: reliable
+  durability: transient_local

@@ -1,0 +1,29 @@
+{
+  "run": "square_02_f_dark_4s",
+  "scored_from_s": 44.287,
+  "scored_to_s": 74.02,
+  "duration_s": 29.732999999999997,
+  "num_poses": 858,
+  "path_length_m": 11.838839911089737,
+  "align_yaw_deg": 179.98631105688438,
+  "aligned_on": "before first fault (6.8 s)",
+  "ate_rmse_m": 123.81888458428274,
+  "ate_mean_m": 83.56963904409824,
+  "ate_median_m": 69.30373362399018,
+  "ate_max_m": 262.55596596360954,
+  "ate_rot_rmse_deg": 28.59287157374895,
+  "rpe_dt_s": 1.0,
+  "rpe_trans_rmse_m": 14.72855447099864,
+  "rpe_rot_rmse_deg": 7.108851380137545,
+  "scale": 0.006996655749005935,
+  "scale_error_pct": -99.30033442509941,
+  "final_error_m": 262.48382146851594,
+  "final_error_pct_of_path": 2217.1414043925097,
+  "faults": [
+    {
+      "fault": "darkness",
+      "from_s": 51.052,
+      "to_s": 55.045
+    }
+  ]
+}
