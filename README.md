@@ -17,6 +17,9 @@ Work in progress.
 - [ ] Baseline accuracy over a set of flights (first square: 3 cm ATE, see below)
 - [x] Bag record / replay (replays are repeatable to under a millimetre)
 - [x] Fault injection on replayed bags
+- [x] Extra sim sensors: GNSS, magnetometer, barometer, rangefinder
+- [x] Flight set: easy, medium, hard and weak-motion bags with a baseline for each
+- [x] Regression suite: one command replays every case and checks nothing got worse
 - [ ] Stress tests: time offset, IMU noise, dropped frames, blur, darkness
 - [ ] Downward rangefinder fused inside OpenVINS
 - [ ] Loosely coupled ESKF on top of OpenVINS
@@ -32,7 +35,7 @@ sim/
   models/, worlds/          the drone model and warehouse world
 vin_ws/
   config/openvins_sim/      OpenVINS config for the sim camera and IMU
-  src/gz_imu_bridge/        Gazebo IMU -> ROS 2 (see docs for why this exists)
+  src/gz_imu_bridge/        Gazebo IMU and extra sensors -> ROS 2 (see docs for why)
   src/vio_flight/           scripted test flight over MAVROS
   src/vio_eval/             record, replay and score runs against ground truth
 runs/                       sim logs and recorded runs (not in git)
@@ -103,6 +106,12 @@ python3 vio_flight.py                       # defaults
 python3 vio_flight.py --side 3 --loops 2    # bigger square, twice
 ```
 
+For the test flight set, `vio_flight_patterns.py` has four patterns: `easy` (the same square), `medium` (bigger, faster, two heights), `hard` (fast, turning to face each leg) and `weak` (long hover, then a slow line):
+
+```bash
+python3 vio_flight_patterns.py --pattern hard
+```
+
 Once it has landed and disarmed, Ctrl-C the recorder (before stopping OpenVINS), then score the run:
 
 ```bash
@@ -119,6 +128,33 @@ bash scripts/start_vio_sim.sh --stop
 ```
 
 `--stop` doesn't touch OpenVINS. Stop it with Ctrl-C in its own terminal, and if it hangs, which it sometimes does, use `pkill -x run_subscribe_m`.
+
+### Regression suite
+
+To replay every recorded case (the four test flights, plus a few faults) and check none of them got worse:
+
+```bash
+cd vin_ws/src/vio_eval
+python3 regression.py                 # all cases, about 12 minutes
+python3 regression.py --only easy     # just some
+```
+
+The cases and their limits are in `regression.yaml`. It prints a pass/fail table and exits non-zero if anything fails. It needs the bags in `runs/bags/`, so it runs locally rather than on GitHub.
+
+### Extra sensors
+
+For GNSS, magnetometer, barometer and a downward rangefinder, start the sim with:
+
+```bash
+bash scripts/start_vio_sim.sh --start --sensors
+```
+
+This loads `iris_with_vio_sensors` in `iris_warehouse_vio_sensors.sdf` and adds a Sensor Bridge tab. The sensors come out on `/vio/gnss/fix`, `/vio/gnss/vel`, `/vio/mag`, `/vio/baro` and `/vio/range`, noise-free. To check them against ground truth while the sim runs:
+
+```bash
+cd vin_ws/src/vio_eval
+python3 check_sensors.py
+```
 
 ### Recording a flight and replaying it
 
@@ -143,7 +179,7 @@ Logs go to `runs/replay_logs/<run_name>/`. A replay runs at sim speed, about twi
 
 ### Injecting faults
 
-Add `--faults` to a replay to corrupt the IMU or camera on the way into OpenVINS. The bag itself isn't changed:
+Add `--faults` to a replay to corrupt the sensors OpenVINS sees. A faulted copy of the bag is written first (`runs/bags/<bag>__<scenario>/`, reused next time) and replayed, so faulted runs are exactly repeatable. The original bag isn't changed:
 
 ```bash
 cd vin_ws/src/vio_eval
@@ -152,6 +188,8 @@ python3 score_run.py square_02_f_dark
 ```
 
 Scenarios are small YAML files in `vin_ws/src/vio_eval/faults/` (`none`, `imu_noise`, `imu_bias_step`, `time_offset_20ms`, `frame_drop_1s`, `frame_freeze_2s`, `dark_4s`, `blur_4s`). Each says which fault, how strong, and when, counted from arming. The full list of fault types is at the top of `fault_injector.py`. The scenario and a log of when each fault was active are copied into the run folder, and the scorer shades the fault on the plots.
+
+`realistic` adds always-on noise to every sensor, roughly what cheap drone parts give. Other scenarios can include it (`include: [realistic]`), as `gnss_spoof_ramp` does.
 
 For a run with faults, the scorer aligns on the clean part before the first fault. To compare against a clean run of the same bag, score the clean one on the same stretch with `--align-window <seconds>`.
 
@@ -176,7 +214,9 @@ Get monocular visual-inertial odometry tracking a drone in a realistic SITL setu
 
   ![square_01 baseline](results/baseline/square_01_score.png)
 - **Bag record and replay.** A flight is recorded once and replayed into OpenVINS without the sim. Replays of the same bag are identical to under a millimetre, and replay agrees with the live run to about 6 mm in ATE (`square_02`: 3.8 cm live, 3.2 cm replayed). So comparisons are done replay against replay.
-- **Fault injection.** A node between the bag and OpenVINS corrupts the IMU or camera on replay. IMU noise, a 1 s camera dropout, an IMU bias step and a 20 ms time offset degrade the estimate but it holds (5 cm to 14 cm ATE, against 4.7 cm clean). Blurred, dark and frozen frames break it: 7 m, 124 m and 171 m ATE. A frozen camera fools the zero-velocity update into thinking the drone has stopped. In every run that diverged, OpenVINS's own 3-sigma stayed far below the real error. More in [results/faults](results/faults/).
+- **Fault injection.** Faults are written into a copy of a recorded bag and replayed, so every faulted run is repeatable. IMU noise, a 1 s camera dropout, darkness and blur barely matter; an IMU bias step and a 20 ms time offset degrade the estimate but it holds (4 cm to 14 cm ATE, against 4.7 cm clean). A frozen camera breaks it (35 m ATE): it fools the zero-velocity update into thinking the drone has stopped, and OpenVINS's own 3-sigma stays far below the real error. An earlier round that injected faults live showed darkness and blur as catastrophic too; that was the injector's timing, not the faults. More in [results/faults](results/faults/).
+- **A flight set.** Four flights recorded once with all sensors. OpenVINS gets 2.2 cm on the easy square, 7.5 cm on a 39 m faster flight and 2.5 cm on the weak-motion one, but 1.2 m on the hard one with fast turns, where it also seems to start badly. More in [results/flight_set](results/flight_set/).
+- **Extra sensors.** GNSS, magnetometer, barometer and rangefinder on a new model, checked against ground truth through a flight: GNSS within 1.2 cm, baro exact, magnetometer heading within 0.13 deg, rangefinder within 4 mm.
 - **A finding.** OpenVINS's own 3-sigma was about 10x the real error. The filter misjudges how much it can trust itself, which matters for anything that relies on its covariance.
 - **One-command sim.** Start and stop scripts for the whole sim, plus docs on how it works and the maths behind it.
 

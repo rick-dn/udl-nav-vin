@@ -2,8 +2,12 @@
 # start_vio_sim.sh - Opens terminals for the VIO SITL stack
 # (iris_with_vio_camera in iris_warehouse_vio.sdf)
 #
-# Usage: bash scripts/start_vio_sim.sh [--start | --stop | --help]
+# Usage: bash scripts/start_vio_sim.sh [--start [--sensors] | --stop | --help]
 #   --start   open the Gazebo, ArduPilot, MAVROS, Bridge and IMU Bridge tabs
+#   --start --sensors
+#             same, but with iris_with_vio_sensors in
+#             iris_warehouse_vio_sensors.sdf (adds GNSS, magnetometer,
+#             barometer, rangefinder) and a Sensor Bridge tab
 #   --stop    stop the sim (also stops start_all.sh) and close its tabs
 #   no option shows this help, so running the script by itself never
 #   launches or builds anything
@@ -18,13 +22,17 @@ ARDUPILOT_DIR="/data/projects/udl_aakash/tools/ardupilot/Tools/autotest"
 VIN_DIR="/data/projects/vin_autonomy"
 RUN_DIR="$VIN_DIR/runs/sitl"
 IMU_BRIDGE="$VIN_DIR/vin_ws/src/gz_imu_bridge/gz_imu_bridge.py"
+SENSOR_BRIDGE="$VIN_DIR/vin_ws/src/gz_imu_bridge/gz_sensor_bridge.py"
 
 show_help() {
-    echo "Usage: bash $(basename "$0") [--start | --stop | --help]"
+    echo "Usage: bash $(basename "$0") [--start [--sensors] | --stop | --help]"
     echo
     echo "  --start   open the VIO sim in terminal tabs:"
     echo "            Gazebo (iris_warehouse_vio.sdf), ArduPilot SITL (--no-rebuild),"
     echo "            MAVROS, ros_gz bridge (camera, ground truth, clock) and IMU bridge"
+    echo "  --start --sensors"
+    echo "            same with iris_warehouse_vio_sensors.sdf, which adds GNSS,"
+    echo "            magnetometer, barometer and rangefinder, plus a Sensor Bridge tab"
     echo "  --stop    stop the sim and close its tabs: Gazebo, ArduPilot, MAVProxy,"
     echo "            MAVROS, bridges and rqt_image_view (also stops start_all.sh)"
     echo "  --help    show this help"
@@ -33,10 +41,12 @@ show_help() {
 }
 
 start_sim() {
+    local world="iris_warehouse_vio.sdf"
+    [ "$1" = "--sensors" ] && world="iris_warehouse_vio_sensors.sdf"
     mkdir -p "$RUN_DIR"
 
     # Tab 1: Gazebo
-    gnome-terminal --tab --title="Gazebo" -- bash -c "cd $PROJECT_DIR && gz sim -v4 -r iris_warehouse_vio.sdf; bash"
+    gnome-terminal --tab --title="Gazebo" -- bash -c "cd $PROJECT_DIR && gz sim -v4 -r $world; bash"
 
     # Small delay so the world is loaded before SITL connects to the plugin
     sleep 5
@@ -61,14 +71,19 @@ start_sim() {
 
     # Tab 5: IMU bridge (Harmonic IMU -> ROS 2, see gz_imu_bridge.py)
     gnome-terminal --tab --title="IMU Bridge" -- bash -c "python3 $IMU_BRIDGE; bash"
+
+    # Tab 6 (--sensors only): GNSS, mag, baro, rangefinder -> ROS 2
+    if [ "$1" = "--sensors" ]; then
+        gnome-terminal --tab --title="Sensor Bridge" -- bash -c "python3 $SENSOR_BRIDGE; bash"
+    fi
 }
 
 # Stop logic below is the same as udl_aakash/scripts/start_all.sh --stop
 
 # Programs the sim tabs run (matched against the full command line)
-SIM_PATTERN='^gz sim|sim_vehicle\.py|mavproxy\.py|bin/arducopter|mavros_node|parameter_bridge|rqt_image_view|gz_imu_bridge\.py'
+SIM_PATTERN='^gz sim|sim_vehicle\.py|mavproxy\.py|bin/arducopter|mavros_node|parameter_bridge|rqt_image_view|gz_imu_bridge\.py|gz_sensor_bridge\.py'
 # Same programs as they appear inside a tab's "bash -c" command
-TAB_PATTERN='gz sim|sim_vehicle\.py|mavros_node|parameter_bridge|rqt_image_view|gz_imu_bridge\.py'
+TAB_PATTERN='gz sim|sim_vehicle\.py|mavros_node|parameter_bridge|rqt_image_view|gz_imu_bridge\.py|gz_sensor_bridge\.py'
 
 # PIDs matching the pattern whose program really is a sim program. A process
 # that only mentions these names (a grep, an editor, another shell) is skipped.
@@ -82,7 +97,7 @@ find_programs() {
             gz|arducopter|parameter_bridge|mavros_node) echo "$pid" ;;
             python|python3)
                 case "${argv1##*/}" in
-                    sim_vehicle.py|mavproxy.py|ros2|gz_imu_bridge.py|rqt_image_view) echo "$pid" ;;
+                    sim_vehicle.py|mavproxy.py|ros2|gz_imu_bridge.py|gz_sensor_bridge.py|rqt_image_view) echo "$pid" ;;
                 esac ;;
         esac
     done
@@ -152,7 +167,11 @@ stop_sim() {
 }
 
 case "$1" in
-    --start) start_sim ;;
+    --start)
+        case "$2" in
+            ""|--sensors) start_sim "$2" ;;
+            *) echo "Unknown option: $2"; echo; show_help; exit 1 ;;
+        esac ;;
     --stop)  stop_sim ;;
     --help|-h|"") show_help ;;
     *) echo "Unknown option: $1"; echo; show_help; exit 1 ;;

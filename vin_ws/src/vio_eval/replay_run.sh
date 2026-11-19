@@ -7,10 +7,11 @@
 # then stops both. The run is saved to runs/eval/<run_name>/ like a live one,
 # so it's scored the same way:  python3 score_run.py <run_name>
 #
-# With --faults, the bag's IMU and camera are remapped to /vio/raw/* and
-# fault_injector.py sits in between. S is a file in faults/ (with or without
-# .yaml) or a path. The scenario and the fault log are copied into the run
-# folder.
+# With --faults, make_faulted_bag.py first writes a faulted copy of the bag to
+# runs/bags/<bag_name>__<scenario>/ (reused if the scenario hasn't changed),
+# and that copy is replayed instead, so faulted replays are repeatable too.
+# S is a file in faults/ (with or without .yaml) or a path. The scenario and
+# the fault log are copied into the run folder.
 #
 # The sim must not be running (its topics would mix with the bag's), and
 # neither must another OpenVINS. Logs go to runs/replay_logs/<run_name>/.
@@ -84,24 +85,38 @@ fi
 source /opt/ros/humble/setup.bash
 source "$VIO_WS/install/setup.bash"
 
+# A node that just exited (e.g. the injector from a previous replay) can stay
+# listed for a few seconds, so give it time to drop off before refusing
+for _ in $(seq 10); do
+    ros2 topic info /vio/imu 2>/dev/null | grep -q "Publisher count: [1-9]" || break
+    sleep 1
+done
 if ros2 topic info /vio/imu 2>/dev/null | grep -q "Publisher count: [1-9]"; then
     echo "something is already publishing /vio/imu: stop the sim first (scripts/start_vio_sim.sh --stop)"
     exit 1
 fi
 
 mkdir -p "$LOG_DIR"
+
+# With faults, write (or reuse) a faulted copy of the bag and replay that
+if [ -n "$SCENARIO" ]; then
+    FAULTED="$BAG_DIR/${BAG_NAME}__$(basename "$SCENARIO" .yaml)"
+    echo "faulted bag: $FAULTED"
+    if ! python3 "$HERE/make_faulted_bag.py" "$BAG" "$SCENARIO" "$FAULTED" > "$LOG_DIR/make_faulted_bag.log" 2>&1; then
+        echo "couldn't make the faulted bag, see $LOG_DIR/make_faulted_bag.log"
+        exit 1
+    fi
+    tail -n 1 "$LOG_DIR/make_faulted_bag.log"
+    BAG="$FAULTED"
+fi
+
 OV_PID=""
 REC_PID=""
-INJ_PID=""
 
 stop_all() {
     if [ -n "$REC_PID" ] && kill -0 "$REC_PID" 2>/dev/null; then
         kill -INT "$REC_PID"
         wait "$REC_PID" 2>/dev/null
-    fi
-    if [ -n "$INJ_PID" ] && kill -0 "$INJ_PID" 2>/dev/null; then
-        kill -INT "$INJ_PID"
-        wait "$INJ_PID" 2>/dev/null
     fi
     if [ -n "$OV_PID" ] && kill -0 "$OV_PID" 2>/dev/null; then
         kill -INT "$OV_PID"
@@ -137,25 +152,6 @@ if ! ros2 topic info /vio/imu 2>/dev/null | grep -q "Subscription count: [1-9]";
     exit 1
 fi
 
-PLAY_REMAP=()
-if [ -n "$SCENARIO" ]; then
-    echo "starting fault injector with $(basename "$SCENARIO") (log: $LOG_DIR/injector.log)"
-    python3 "$HERE/fault_injector.py" --scenario "$SCENARIO" --log "$LOG_DIR/faults.csv" \
-        > "$LOG_DIR/injector.log" 2>&1 &
-    INJ_PID=$!
-    for _ in $(seq 15); do
-        ros2 topic info /vio/raw/imu 2>/dev/null | grep -q "Subscription count: [1-9]" && break
-        kill -0 "$INJ_PID" 2>/dev/null || break
-        sleep 1
-    done
-    if ! ros2 topic info /vio/raw/imu 2>/dev/null | grep -q "Subscription count: [1-9]"; then
-        echo "fault injector didn't come up, see $LOG_DIR/injector.log"
-        stop_all
-        exit 1
-    fi
-    PLAY_REMAP=(--remap /vio/imu:=/vio/raw/imu /vio/camera/image:=/vio/raw/camera/image)
-fi
-
 echo "starting recorder (log: $LOG_DIR/recorder.log)"
 python3 "$HERE/record_run.py" --name "$RUN_NAME" > "$LOG_DIR/recorder.log" 2>&1 &
 REC_PID=$!
@@ -164,7 +160,7 @@ sleep 2
 echo "playing $BAG at rate $RATE"
 ros2 bag play "$BAG" --rate "$RATE" --disable-keyboard-controls \
     --qos-profile-overrides-path "$HERE/qos_overrides.yaml" \
-    "${PLAY_REMAP[@]}" > "$LOG_DIR/play.log" 2>&1
+    > "$LOG_DIR/play.log" 2>&1
 
 # let the last messages through before stopping
 sleep 3
@@ -172,9 +168,9 @@ stop_all
 tail -n 1 "$LOG_DIR/recorder.log"
 if [ -n "$SCENARIO" ] && [ -d "$EVAL_DIR/$RUN_NAME" ]; then
     cp "$SCENARIO" "$EVAL_DIR/$RUN_NAME/fault_scenario.yaml"
-    cp "$LOG_DIR/faults.csv" "$EVAL_DIR/$RUN_NAME/faults.csv" 2>/dev/null
+    cp "$BAG/faults.csv" "$EVAL_DIR/$RUN_NAME/faults.csv" 2>/dev/null
     echo "faults:"
-    grep -v "^t," "$LOG_DIR/faults.csv" 2>/dev/null | sed 's/^/  /'
+    grep -v "^t," "$BAG/faults.csv" 2>/dev/null | grep -v ",count," | sed 's/^/  /'
 fi
 echo
 echo "score it with:  python3 $HERE/score_run.py $RUN_NAME"

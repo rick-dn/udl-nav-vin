@@ -42,6 +42,12 @@ Stress tests only mean something if every run flies the same path, so the flight
 
 The adapter's commands are fire-and-forget: `arm()` returns as soon as the request is sent, not when the drone is armed. So the script checks telemetry after every step and re-sends a command if nothing happens. Each step has a timeout; on a timeout it lands.
 
+## The flight set
+
+One easy square says little about where VIO breaks, so `vio_flight_patterns.py` has four flights: the same easy square, a bigger and faster one with a height change, a hard one where the nose turns to face each leg, and a weak-motion one with a long hover and a slow line. Each is recorded once as a bag and reused for everything after.
+
+Apart from the easy square, legs are flown by moving the position target along the leg at a set speed, timed in sim time. ArduPilot picks its own speed if you just give it the next corner, and the sim runs at about half real time, so this is the way to get the same path and speed every run.
+
 ## Getting OpenVINS to start, and to stay put
 
 Two config changes were needed once it was actually flying.
@@ -82,7 +88,9 @@ How repeatable is it? Replaying the same bag three times gave the same trajector
 
 ## Injecting faults
 
-`fault_injector.py` is a small node that sits between a replayed bag and OpenVINS. With `--faults`, `replay_run.sh` renames the bag's IMU and camera topics to `/vio/raw/...` on playback, so OpenVINS doesn't hear them directly. The injector listens to the raw topics, changes or drops messages while a fault is active, and republishes them under the normal names. OpenVINS sees what looks like ordinary sensor data with the damage already done, which is how a real fault would look to it. Ground truth and the MAVROS state skip the injector, so the score always compares against the true path.
+With `--faults`, `replay_run.sh` first writes a faulted copy of the bag (`make_faulted_bag.py`): every message is read in order, the sensor ones are changed or dropped while a fault is active, and the result goes into a new bag. Then that copy is replayed like any other. OpenVINS sees ordinary sensor data with the damage already done, which is how a real fault would look to it. Ground truth and the MAVROS state are copied unchanged, so the score always compares against the true path.
+
+The fault code is the same as in `fault_injector.py`, which can still run live between sensors and estimator. It was used that way at first, and that turned out to be a mistake for replays: adding noise or blur to every image takes the Python node a few milliseconds, the IMU messages queue up behind it, and OpenVINS reacts badly to the scrambled timing. Darkness looked like it made OpenVINS diverge by over 100 m; written into the bag beforehand, the same darkness does nothing. Live injection also wasn't repeatable. Writing the bag first fixes both.
 
 What a fault does to a message:
 
@@ -93,15 +101,33 @@ What a fault does to a message:
 - darkness: scale every pixel down and add a little noise
 - blur: run a blur filter over the image
 
-Faults are timed from the arm event in the bag, so "10 s after arming" lands on the same moment of the flight in every replay. The random numbers come from a seeded generator, so a replay with a fault is as repeatable as one without. A replay through the injector with no faults gave exactly the same trajectory as a direct replay, so the extra node doesn't change anything by itself.
+Faults are timed from the arm event in the bag, so "10 s after arming" lands on the same moment of the flight in every replay. The random numbers come from seeded generators, one per fault and topic, so the same bag and scenario always produce the same faulted bag, byte for byte. Two replays of the same faulted bag agree to under a millimetre.
 
 One scoring detail: a run that diverges by hundreds of metres would drag the frame alignment and hide where it broke. So for runs with faults, the scorer aligns only on the clean part before the first fault, and the clean reference is scored on the same stretch (`--align-window`).
 
-What came out of the first round (numbers in `results/faults`):
+What came out (numbers in `results/faults`):
 
-- IMU noise and a 1 s camera dropout barely matter. An IMU bias step and a 20 ms camera time offset roughly double or triple the error, but OpenVINS holds.
-- Blurred, dark and frozen frames break it. The frozen camera is the clearest case: the images stop changing, so OpenVINS decides the drone has stopped and applies zero-velocity updates for the whole freeze while the drone is actually flying. By the time real images come back its state is wrong and it runs away. That's the catch noted in the maths notes, now measured.
-- In every run that diverged, OpenVINS's own 3-sigma stayed far below the real error. It doesn't know it has failed. That's the gap the integrity work is meant to close.
+- IMU noise, a 1 s camera dropout, 4 s of darkness and 4 s of blur barely matter. An IMU bias step and a 20 ms camera time offset roughly double or triple the error, but OpenVINS holds.
+- A frozen camera breaks it. The images stop changing, so OpenVINS decides the drone has stopped and applies zero-velocity updates for the whole freeze while the drone is actually flying. By the time real images come back its state is wrong and it runs away by tens of metres. That's the catch noted in the maths notes, now measured.
+- In the run that diverged, OpenVINS's own 3-sigma stayed far below the real error. It doesn't know it has failed. That's the gap the integrity work is meant to close.
+
+## Regression suite
+
+`regression.py` replays a fixed list of cases from `regression.yaml`: the four test flights clean, and one flight with realistic noise, a time offset and darkness. Each is scored and checked against limits set at about 1.5 times what OpenVINS scores today. The point is to change the estimator later and know in one command whether anything got worse.
+
+Because replays are repeatable, the first full run reproduced every baseline exactly, so a failing case means something really changed.
+
+## Extra sensors
+
+The estimator in the plan fuses more than a camera and an IMU, so there's a second drone, `iris_with_vio_sensors`: the same camera and IMU plus GNSS, a magnetometer, a barometer and a downward rangefinder. The old model is left alone so its recorded flights stay valid. The sensors are clean; noise is added on replay with the `realistic` scenario, so changing the noise never means flying again. They're read with a small Python bridge, for the same reason as the IMU.
+
+A few things needed care:
+
+- **GNSS origin.** The world's latitude, longitude and height are set to ArduPilot's home, so this GNSS agrees with ArduPilot's own GPS. That matters later, when one is used to catch the other being spoofed.
+- **Magnetometer.** With a world location set, Gazebo works out Earth's field itself, and by default reports it in gauss in a north-east-down frame. The first check showed a field about 10,000 times too big, pointing the wrong way. Two settings in the world switch it to tesla in Gazebo's own east-north-up frame.
+- **Barometer.** Gazebo ignored the reference altitude, so the pressure is for height above the world origin. That's fine: an estimator only uses changes in baro height, since real pressure drifts with the weather anyway.
+
+`check_sensors.py` compares each sensor with ground truth. Through a test flight: GNSS within 1.2 cm, baro height exact, magnetometer heading within 0.13 degrees, rangefinder within 4 mm. The rangefinder reads out of range on the ground, because its minimum range is just more than its height above the floor.
 
 ## Start / stop script
 

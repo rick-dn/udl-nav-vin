@@ -17,10 +17,10 @@ A multi-sensor, integrity-aware estimator for a drone flying where GNSS is jamme
 | **M0** | **Tooling** | | | |
 | 0.1 | Recorder + scorer | Record a run, score vs ground truth (ATE / RPE / scale) | Claude | ✅ 3 cm ATE on first square |
 | 0.2 | Bag record / replay | Fly once, replay into the estimator without the sim | Claude | ✅ Replays identical; 6 mm ATE from the live run |
-| 0.3 | Fault injector | IMU noise / bias, time offsets, dropped / frozen frames, blur, darkness | Claude | ✅ 7 faults on one bag; blur, darkness and frozen frames break OpenVINS |
-| 0.4 | Sim sensors | New model copy: GNSS, magnetometer, rangefinder, realistic camera and IMU noise | Claude | Topics in ROS 2 |
-| 0.5 | Flight set | Easy, medium, hard and weak-motion flights, recorded as bags | Shared (I fly) | Bags for all four |
-| 0.6 | Regression suite | Replay all bags, score, fail if worse than a threshold | Claude | One command, runs in CI |
+| 0.3 | Fault injector | IMU noise / bias, time offsets, dropped / frozen frames, blur, darkness | Claude | ✅ 7 faults on one bag, repeatable; a frozen camera breaks OpenVINS |
+| 0.4 | Sim sensors | New model copy: GNSS, magnetometer, rangefinder, realistic camera and IMU noise | Claude | ✅ All four checked against ground truth in flight |
+| 0.5 | Flight set | Easy, medium, hard and weak-motion flights, recorded as bags | Shared (I fly) | ✅ Four bags; OpenVINS 2-8 cm on three, 1.2 m on hard |
+| 0.6 | Regression suite | Replay all bags, score, fail if worse than a threshold | Claude | ✅ 7 cases, one command, all pass (local; bags aren't in git) |
 | **M1** | **ESKF core** | | | |
 | 1.1 | Derivation | Error state on SO(3), IMU biases, Jacobians for GNSS / baro / mag / range | Me | Written up in `docs/` |
 | 1.2 | Filter code | C++ library: propagate, update, chi-square gating | Me | Unit tests pass |
@@ -66,6 +66,11 @@ Unit tests and CI run throughout, and every milestone ends with a measured resul
 **M5, Depth.** Understand why the filter behaves as it does. Compare first-estimates Jacobians against an invariant EKF for consistency, and show analytically and in plots which directions become unobservable as sensors drop out (yaw without magnetometer or GNSS, scale when hovering).
 
 **M6, SITL demo and write-up.** One scripted flight that shows the whole system working: spoofing, then jamming, then a degraded camera, each detected and handled. Plus a video, plots, and a write-up of the decisions, the alternatives considered, what failed along the way and the measured results.
+
+## Known issues
+
+- ~~**Replays with heavy fault processing aren't exactly repeatable.**~~ **Fixed.** Live injection held up the IMU behind image processing, so noisy runs varied (4.8 vs 8.5 cm) and darkness and blur looked catastrophic when they aren't. Faults are now written into a copy of the bag first (`make_faulted_bag.py`, `runs/bags/<bag>__<scenario>/`) and replayed plainly: repeatable to under a millimetre. The 0.3 faults were re-run this way and the results corrected.
+- **OpenVINS seems to initialise badly on the hard flight** (about 6 deg of tilt error from the start). Not looked into yet.
 
 ## Notes
 

@@ -1,0 +1,63 @@
+# Realistic sensor noise, always on. The sim's sensors are perfect; this makes
+# them look like the cheap parts a small drone actually carries. Values are
+# typical datasheet-level numbers, to be replaced by measured ones (Allan
+# variance, logged GNSS) once the real rig exists.
+#
+# Combine with a fault by including it:
+#   include: [realistic]
+#   faults: [ ... ]
+seed: 1
+faults:
+  # IMU, roughly a Bosch BMI055 (the RealSense D455's IMU) at 200 Hz.
+  # Noise density about 150 ug/sqrt(Hz) accel and 0.014 deg/s/sqrt(Hz) gyro;
+  # per sample that's density * sqrt(200).
+  - type: imu_noise
+    always: true
+    accel_sigma: 0.021       # m/s^2
+    gyro_sigma: 0.0035       # rad/s
+  # small constant turn-on bias, as left after a rough calibration
+  - type: imu_bias
+    always: true
+    accel: [0.02, -0.015, 0.03]   # m/s^2
+    gyro: [0.001, -0.0008, 0.0005] # rad/s
+  # bias wandering over time
+  - type: imu_bias_walk
+    always: true
+    accel_sigma: 0.0004      # m/s^2 per sqrt(s)
+    gyro_sigma: 0.00002      # rad/s per sqrt(s)
+
+  # Camera sensor noise
+  - type: image_noise
+    always: true
+    sigma: 2.0               # grey levels
+
+  # GNSS, roughly a u-blox M8/M9 in open sky: about 1.5 m horizontal and 3 m
+  # vertical error that wanders slowly, 0.1 m/s velocity noise, and about
+  # 150 ms between the measurement and when it arrives.
+  - type: gnss_noise
+    always: true
+    horiz_sigma: 1.5         # m
+    vert_sigma: 3.0          # m
+    tau_s: 60.0              # s
+    vel_sigma: 0.1           # m/s
+  - type: gnss_delay
+    always: true
+    delay_s: 0.15
+
+  # Magnetometer: noise plus a fixed offset from motors and wiring (hard iron)
+  - type: mag_noise
+    always: true
+    sigma: 0.0000003         # T (0.3 uT)
+    bias: [0.000002, -0.0000015, 0.000003]  # T
+
+  # Barometer: about 0.25 m of noise (12 Pa is roughly 1 m) and slow drift
+  - type: baro_noise
+    always: true
+    sigma: 3.0               # Pa
+    drift_rate: 0.05         # Pa/s, about 0.25 m per minute
+
+  # Rangefinder: 2 cm noise and the occasional bad reading
+  - type: range_noise
+    always: true
+    sigma: 0.02              # m
+    outlier_probability: 0.005

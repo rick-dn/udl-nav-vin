@@ -19,6 +19,14 @@ TOPICS=(
     /vio/imu
     /vio/ground_truth/odom
     /mavros/state
+    # extra estimator sensors (only published with start_vio_sim.sh --start --sensors)
+    /vio/gnss/fix
+    /vio/gnss/vel
+    /vio/mag
+    /vio/baro
+    /vio/range
+    # ArduPilot's own simulated GPS, to compare against /vio/gnss
+    /mavros/global_position/raw/fix
 )
 
 show_help() {

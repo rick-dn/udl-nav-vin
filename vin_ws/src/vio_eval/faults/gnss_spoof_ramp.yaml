@@ -1,0 +1,9 @@
+# Slow GNSS spoofing on top of realistic noise: from 10 s after arming the
+# reported position is dragged north at 0.3 m/s, slow enough to look like
+# normal GNSS wander at first. For the spoofing detector later (M4).
+seed: 1
+include: [realistic]
+faults:
+  - type: gnss_offset
+    start_after_arm_s: 10.0
+    north_rate: 0.3          # m/s
