@@ -6,7 +6,8 @@ Start it after OpenVINS and before the flight, stop it with Ctrl-C after
 landing. Saves to runs/eval/<name>/:
 
   estimate.tum       OpenVINS pose (/ov_msckf/poseimu)
-  ground_truth.tum   Gazebo pose (/vio/ground_truth/odom)
+  ground_truth.tum   Gazebo pose (/sim/ground_truth/odom, or /vio/ground_truth/odom
+                     on the older sim)
   estimate_cov.csv   OpenVINS position and orientation variances
   events.csv         MAVROS armed / mode changes, for finding takeoff and landing
 
@@ -60,6 +61,8 @@ class RunRecorder(Node):
         self.last_state = None
 
         self.create_subscription(PoseWithCovarianceStamped, '/ov_msckf/poseimu', self.on_estimate, 50)
+        # D455 copy and older sim name the ground truth differently; only one is live
+        self.create_subscription(Odometry, '/sim/ground_truth/odom', self.on_ground_truth, 50)
         self.create_subscription(Odometry, '/vio/ground_truth/odom', self.on_ground_truth, 50)
 
         # Matches the MAVROS publisher, same as mavros_adapter.py

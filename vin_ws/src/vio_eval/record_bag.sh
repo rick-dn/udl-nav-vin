@@ -10,23 +10,31 @@
 # Messages are stamped with sim time (--use-sim-time), so a replay runs at sim
 # speed, not at the slower speed the live sim ran at.
 
-VIN_DIR="/data/projects/vin_autonomy"
+VIN_DIR="/data/projects/udl_nav_vin"
 BAG_DIR="$VIN_DIR/runs/bags"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TOPICS=(
+    # D455 copy (start_vio_sim.sh --start --d455), named as on the real drone
+    /camera/camera/infra1/image_rect_raw
+    /camera/camera/infra1/camera_info
+    /camera/camera/imu
+    /rangefinder/range
+    /mavros/imu/mag
+    /mavros/imu/static_pressure
+    /mavros/global_position/raw/fix
+    /mavros/global_position/raw/gps_vel
+    /mavros/state
+    /sim/ground_truth/odom
+    # older sim (--start, --start --sensors); topics that aren't live are skipped
     /vio/camera/image
     /vio/camera/camera_info
     /vio/imu
     /vio/ground_truth/odom
-    /mavros/state
-    # extra estimator sensors (only published with start_vio_sim.sh --start --sensors)
     /vio/gnss/fix
     /vio/gnss/vel
     /vio/mag
     /vio/baro
     /vio/range
-    # ArduPilot's own simulated GPS, to compare against /vio/gnss
-    /mavros/global_position/raw/fix
 )
 
 show_help() {

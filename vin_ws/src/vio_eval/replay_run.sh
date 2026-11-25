@@ -16,9 +16,9 @@
 # The sim must not be running (its topics would mix with the bag's), and
 # neither must another OpenVINS. Logs go to runs/replay_logs/<run_name>/.
 
-VIN_DIR="/data/projects/vin_autonomy"
+VIN_DIR="/data/projects/udl_nav_vin"
 VIO_WS="/data/projects/udl_aakash/vio_ws"
-CONFIG="$VIN_DIR/vin_ws/config/openvins_sim/estimator_config.yaml"
+CONFIG_DIR="$VIN_DIR/vin_ws/config"
 BAG_DIR="$VIN_DIR/runs/bags"
 EVAL_DIR="$VIN_DIR/runs/eval"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -63,6 +63,15 @@ if [ ! -f "$BAG/metadata.yaml" ]; then
     echo "no bag at $BAG"
     exit 1
 fi
+# Which setup the bag was recorded with decides the IMU topic and the
+# OpenVINS config: D455 copy (start_vio_sim.sh --d455) or the older /vio sim
+if grep -q "name: /camera/camera/imu" "$BAG/metadata.yaml"; then
+    IMU_TOPIC=/camera/camera/imu
+    CONFIG="$CONFIG_DIR/openvins_d455/estimator_config.yaml"
+else
+    IMU_TOPIC=/vio/imu
+    CONFIG="$CONFIG_DIR/openvins_sim/estimator_config.yaml"
+fi
 if [ -e "$EVAL_DIR/$RUN_NAME" ]; then
     echo "$EVAL_DIR/$RUN_NAME already exists, pick another run name"
     exit 1
@@ -87,12 +96,16 @@ source "$VIO_WS/install/setup.bash"
 
 # A node that just exited (e.g. the injector from a previous replay) can stay
 # listed for a few seconds, so give it time to drop off before refusing
+imu_busy() {
+    ros2 topic info /vio/imu 2>/dev/null | grep -q "Publisher count: [1-9]" ||
+        ros2 topic info /camera/camera/imu 2>/dev/null | grep -q "Publisher count: [1-9]"
+}
 for _ in $(seq 10); do
-    ros2 topic info /vio/imu 2>/dev/null | grep -q "Publisher count: [1-9]" || break
+    imu_busy || break
     sleep 1
 done
-if ros2 topic info /vio/imu 2>/dev/null | grep -q "Publisher count: [1-9]"; then
-    echo "something is already publishing /vio/imu: stop the sim first (scripts/start_vio_sim.sh --stop)"
+if imu_busy; then
+    echo "something is already publishing an IMU topic: stop the sim first (scripts/start_vio_sim.sh --stop)"
     exit 1
 fi
 
@@ -134,7 +147,7 @@ stop_all() {
 }
 trap 'echo; echo "interrupted, stopping"; stop_all; exit 130' INT TERM
 
-echo "starting OpenVINS (log: $LOG_DIR/openvins.log)"
+echo "starting OpenVINS with $(basename "$(dirname "$CONFIG")") (log: $LOG_DIR/openvins.log)"
 ros2 launch ov_msckf subscribe.launch.py config_path:="$CONFIG" \
     max_cameras:=1 use_stereo:=false rviz_enable:="$RVIZ" \
     > "$LOG_DIR/openvins.log" 2>&1 &
@@ -142,11 +155,11 @@ OV_PID=$!
 
 # wait until OpenVINS has subscribed to the IMU
 for _ in $(seq 30); do
-    ros2 topic info /vio/imu 2>/dev/null | grep -q "Subscription count: [1-9]" && break
+    ros2 topic info "$IMU_TOPIC" 2>/dev/null | grep -q "Subscription count: [1-9]" && break
     kill -0 "$OV_PID" 2>/dev/null || break
     sleep 1
 done
-if ! ros2 topic info /vio/imu 2>/dev/null | grep -q "Subscription count: [1-9]"; then
+if ! ros2 topic info "$IMU_TOPIC" 2>/dev/null | grep -q "Subscription count: [1-9]"; then
     echo "OpenVINS didn't come up, see $LOG_DIR/openvins.log"
     stop_all
     exit 1

@@ -1,17 +1,26 @@
 #!/usr/bin/env python3
 """
-check_sensors.py - Checks the sim's estimator sensors against ground truth
+check_sensors.py - Checks the sim's estimator inputs against ground truth
 
-Run with the sim up (start_vio_sim.sh --start --sensors). Listens for a few
-seconds of sim time, then prints each sensor's rate and how far its readings
-are from what ground truth says they should be:
+Run with the sim up. Works with either setup and checks whichever topics are
+live:
 
-  GNSS      position converted to local ENU vs ground truth position,
-            and vs ArduPilot's own GPS (/mavros/global_position/raw/fix)
-  baro      pressure converted to height (standard atmosphere) vs ground truth
-  mag       field rotated into the world frame by the true attitude vs the
-            world's field, and the heading it implies vs the true heading
-  range     reading vs height of the sensor above the floor along the beam
+  D455 copy (start_vio_sim.sh --start --d455), named as on the real drone:
+    /camera/camera/imu, /camera/camera/infra1/image_rect_raw, /rangefinder/range,
+    ArduPilot via MAVROS: /mavros/global_position/raw/fix, .../raw/gps_vel,
+    /mavros/imu/mag, /mavros/imu/static_pressure; truth /sim/ground_truth/odom
+  older sim (--start --sensors): the /vio/... topics
+
+Listens for a few seconds of sim time, then prints for each sensor:
+  - rate in sim time, and how far its stamps are from sim time when received
+    (a large offset means it's stamped with the wall clock, not sim time)
+  - how far its readings are from what ground truth says they should be:
+      GNSS   position in local ENU vs ground truth (horizontal; height is
+             compared as change since the start, since datums differ)
+      baro   height change from pressure (standard atmosphere) vs ground truth
+      mag    field rotated into the world by the true attitude; dip,
+             declination, and heading vs true heading
+      range  reading vs sensor height above the floor along the beam
 
 Usage: python3 check_sensors.py [--seconds 10]
 """
@@ -28,23 +37,35 @@ from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import FluidPressure, MagneticField, NavSatFix, Range
+from sensor_msgs.msg import FluidPressure, Image, Imu, MagneticField, NavSatFix, Range
 
-# Must match iris_warehouse_vio_sensors.sdf / iris_with_vio_sensors
-ORIGIN_LAT, ORIGIN_LON, ORIGIN_ALT = 51.280503, -1.103467, 100.0
-BARO_ZERO_ALT = 0.0          # Gazebo's baro treats the world origin as sea level
+# World origin = ArduPilot home (-L Basingstoke); the ground truth frame is ENU
+# from there
+ORIGIN_LAT, ORIGIN_LON = 51.280503, -1.103467
 RANGE_OFFSET_Z = -0.10       # rangefinder below base_link
 EARTH_RADIUS = 6378137.0
+
+# key: (D455 / real-setup topic, older sim topic, type, expected Hz, QoS)
+TOPICS = {
+    'gt':    ('/sim/ground_truth/odom', '/vio/ground_truth/odom', Odometry, 100, 50),
+    'imu':   ('/camera/camera/imu', '/vio/imu', Imu, 200, 200),
+    'image': ('/camera/camera/infra1/image_rect_raw', '/vio/camera/image', Image, 30, 10),
+    'fix':   ('/mavros/global_position/raw/fix', '/vio/gnss/fix', NavSatFix, None, 'sensor'),
+    'vel':   ('/mavros/global_position/raw/gps_vel', '/vio/gnss/vel', TwistStamped, None, 'sensor'),
+    'mag':   ('/mavros/imu/mag', '/vio/mag', MagneticField, None, 'sensor'),
+    'baro':  ('/mavros/imu/static_pressure', '/vio/baro', FluidPressure, None, 'sensor'),
+    'range': ('/rangefinder/range', '/vio/range', Range, 20, 20),
+}
 
 
 def stamp(msg):
     return msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
 
 
-def to_enu(lat, lon, alt):
+def to_enu(lat, lon):
     n = math.radians(lat - ORIGIN_LAT) * EARTH_RADIUS
     e = math.radians(lon - ORIGIN_LON) * EARTH_RADIUS * math.cos(math.radians(ORIGIN_LAT))
-    return np.array([e, n, alt - ORIGIN_ALT])
+    return np.array([e, n])
 
 
 def pressure_to_height(p):
@@ -55,27 +76,33 @@ def pressure_to_height(p):
 class Checker(Node):
     def __init__(self):
         super().__init__('check_sensors')
-        self.data = {k: [] for k in ('gt', 'fix', 'vel', 'mag', 'baro', 'range', 'ap_fix')}
-        self.create_subscription(Odometry, '/vio/ground_truth/odom', lambda m: self.add('gt', m), 50)
-        self.create_subscription(NavSatFix, '/vio/gnss/fix', lambda m: self.add('fix', m), 20)
-        self.create_subscription(TwistStamped, '/vio/gnss/vel', lambda m: self.add('vel', m), 20)
-        self.create_subscription(MagneticField, '/vio/mag', lambda m: self.add('mag', m), 50)
-        self.create_subscription(FluidPressure, '/vio/baro', lambda m: self.add('baro', m), 50)
-        self.create_subscription(Range, '/vio/range', lambda m: self.add('range', m), 20)
-        self.create_subscription(NavSatFix, '/mavros/global_position/raw/fix',
-                                 lambda m: self.data['ap_fix'].append(m), qos_profile_sensor_data)
+        # per key and topic: list of (receive sim time, msg)
+        self.data = {}
+        self.sim_now = None
+        for key, (new, old, typ, _, qos) in TOPICS.items():
+            q = qos_profile_sensor_data if qos == 'sensor' else qos
+            for topic in (new, old):
+                self.data[(key, topic)] = []
+                self.create_subscription(typ, topic, self.make_cb(key, topic), q)
 
-    def add(self, key, msg):
-        self.data[key].append(msg)
+    def make_cb(self, key, topic):
+        def cb(msg):
+            if key == 'gt':
+                self.sim_now = stamp(msg)
+            if self.sim_now is not None:
+                self.data[(key, topic)].append((self.sim_now, msg))
+        return cb
 
     def sim_span(self):
-        gt = self.data['gt']
-        return stamp(gt[-1]) - stamp(gt[0]) if len(gt) > 1 else 0.0
+        spans = [v[-1][0] - v[0][0] for (k, _), v in self.data.items() if k == 'gt' and len(v) > 1]
+        return max(spans) if spans else 0.0
 
-
-def gt_at(gt_t, gt_msgs, t):
-    """Ground truth message nearest to time t."""
-    return gt_msgs[int(np.argmin(np.abs(gt_t - t)))]
+    def pick(self, key):
+        """(topic, messages) for whichever version of this sensor was live."""
+        new, old = TOPICS[key][0], TOPICS[key][1]
+        if self.data[(key, new)]:
+            return new, self.data[(key, new)]
+        return old, self.data[(key, old)]
 
 
 def main():
@@ -88,108 +115,112 @@ def main():
     print(f'listening for {args.seconds:.0f} s of sim time...')
     while rclpy.ok() and node.sim_span() < args.seconds:
         rclpy.spin_once(node, timeout_sec=0.5)
-    d = node.data
+    picked = {k: node.pick(k) for k in TOPICS}
     node.destroy_node()
     rclpy.try_shutdown()
 
-    if len(d['gt']) < 2:
+    gt_topic, gt = picked['gt']
+    if len(gt) < 2:
         print('no ground truth received, is the sim running?')
         return
-    gt_t = np.array([stamp(m) for m in d['gt']])
-    span = gt_t[-1] - gt_t[0]
+    gt_t = np.array([stamp(m) for _, m in gt])
+    gt_msgs = [m for _, m in gt]
+    setup = 'D455 copy' if gt_topic.startswith('/sim') else 'older /vio sim'
+    print(f'setup: {setup}, {gt_t[-1] - gt_t[0]:.1f} s of sim time\n')
 
-    print(f'\nrates over {span:.1f} s of sim time')
-    for key, topic, want in [('gt', '/vio/ground_truth/odom', 100), ('fix', '/vio/gnss/fix', 10),
-                             ('vel', '/vio/gnss/vel', 10), ('mag', '/vio/mag', 50),
-                             ('baro', '/vio/baro', 50), ('range', '/vio/range', 20)]:
-        msgs = d[key]
-        if len(msgs) < 2:
-            print(f'  {topic:28s} NOT RECEIVED')
-            continue
-        ts = np.array([stamp(m) for m in msgs])
-        rate = (len(ts) - 1) / (ts[-1] - ts[0])
-        print(f'  {topic:28s} {rate:6.1f} Hz (expected {want})')
+    def gt_at(t):
+        return gt_msgs[int(np.argmin(np.abs(gt_t - t)))]
 
-    def gt_pos(m):
+    def pos(m):
         p = m.pose.pose.position
         return np.array([p.x, p.y, p.z])
 
-    def gt_rot(m):
+    def rot(m):
         q = m.pose.pose.orientation
         return Rotation.from_quat([q.x, q.y, q.z, q.w])
 
-    print('\nGNSS position (local ENU) vs ground truth')
-    if d['fix']:
-        err = np.array([to_enu(m.latitude, m.longitude, m.altitude)
-                        - gt_pos(gt_at(gt_t, d['gt'], stamp(m))) for m in d['fix']])
-        print(f'  mean error e/n/u  {err.mean(0).round(3)} m, max |error| {np.abs(err).max():.3f} m')
-        last = d['fix'][-1]
-        print(f'  last fix          {last.latitude:.7f}, {last.longitude:.7f}, {last.altitude:.2f} m')
-    if d['ap_fix']:
-        ap = d['ap_fix'][-1]
-        print(f'  ArduPilot GPS     {ap.latitude:.7f}, {ap.longitude:.7f}, {ap.altitude:.2f} m')
-        if d['fix']:
-            diff = to_enu(ap.latitude, ap.longitude, ap.altitude) - to_enu(last.latitude, last.longitude, last.altitude)
-            print(f'  ArduPilot - ours  e/n/u {diff.round(2)} m  (altitude datums can differ)')
-    else:
-        print('  ArduPilot GPS     not received')
+    print(f'{"topic":40s} {"rate":>8s} {"expected":>9s} {"stamp - sim time":>17s}')
+    for key, (_, _, _, want, _) in TOPICS.items():
+        topic, msgs = picked[key]
+        if len(msgs) < 2:
+            print(f'{topic:40s} NOT RECEIVED')
+            continue
+        ts = np.array([stamp(m) for _, m in msgs])
+        recv = np.array([r for r, _ in msgs])
+        span = ts[-1] - ts[0]
+        rate = (len(ts) - 1) / span if span > 0 else float('nan')
+        offset = np.median(ts - recv)
+        flag = '   <- not sim time' if abs(offset) > 5.0 else ''
+        print(f'{topic:40s} {rate:6.1f} Hz {str(want or "-"):>9s} {offset:+14.3f} s{flag}')
 
-    if d['vel']:
-        v = np.array([[m.twist.linear.x, m.twist.linear.y, m.twist.linear.z] for m in d['vel']])
-        print(f'  velocity mean     {v.mean(0).round(3)} m/s')
+    def usable(key):
+        msgs = picked[key][1]
+        if len(msgs) < 2:
+            return None
+        ts = [stamp(m) for _, m in msgs]
+        if abs(np.median(np.array(ts) - np.array([r for r, _ in msgs]))) > 5.0:
+            print(f'  {picked[key][0]}: stamps are not sim time, skipping the value check')
+            return None
+        return [m for _, m in msgs]
 
-    print('\nbarometer height vs ground truth')
-    if d['baro']:
-        err = np.array([pressure_to_height(m.fluid_pressure) - BARO_ZERO_ALT
-                        - gt_pos(gt_at(gt_t, d['gt'], stamp(m)))[2] for m in d['baro']])
-        print(f'  pressure          {d["baro"][-1].fluid_pressure:.1f} Pa')
-        print(f'  height error      mean {err.mean():+.3f} m, spread {err.std():.3f} m')
+    print('\nGNSS vs ground truth')
+    fix = usable('fix')
+    if fix:
+        err = np.array([to_enu(m.latitude, m.longitude) - pos(gt_at(stamp(m)))[:2] for m in fix])
+        alt0, z0 = fix[0].altitude, pos(gt_at(stamp(fix[0])))[2]
+        dz = np.array([(m.altitude - alt0) - (pos(gt_at(stamp(m)))[2] - z0) for m in fix])
+        print(f'  horizontal error   mean e/n {err.mean(0).round(3)} m, max {np.abs(err).max():.3f} m')
+        print(f'  height change err  mean {dz.mean():+.3f} m, max |{np.abs(dz).max():.3f}| m')
+    vel = usable('vel')
+    if vel:
+        v = np.array([[m.twist.linear.x, m.twist.linear.y, m.twist.linear.z] for m in vel])
+        print(f'  velocity mean      {v.mean(0).round(3)} m/s')
 
-    print('\nmagnetometer vs world field')
-    if d['mag']:
+    print('\nbarometer height change vs ground truth')
+    baro = usable('baro')
+    if baro:
+        h0, z0 = pressure_to_height(baro[0].fluid_pressure), pos(gt_at(stamp(baro[0])))[2]
+        err = np.array([(pressure_to_height(m.fluid_pressure) - h0) - (pos(gt_at(stamp(m)))[2] - z0)
+                        for m in baro])
+        print(f'  pressure           {baro[-1].fluid_pressure:.1f} Pa')
+        print(f'  error              mean {err.mean():+.3f} m, spread {err.std():.3f} m')
+
+    print('\nmagnetometer')
+    mag = usable('mag')
+    if mag:
         world, heading_err = [], []
-        for m in d['mag']:
-            g = gt_at(gt_t, d['gt'], stamp(m))
+        for m in mag:
+            R = rot(gt_at(stamp(m)))
             b = np.array([m.magnetic_field.x, m.magnetic_field.y, m.magnetic_field.z])
-            R = gt_rot(g)
-            w = R.apply(b)
-            world.append(w)
-            # heading from the horizontal field after levelling with the true roll/pitch
-            yaw_true = R.as_euler('ZYX')[0]
-            level = Rotation.from_euler('ZYX', [0, *R.as_euler('ZYX')[1:]]).apply(b)
-            # body x points along heading; magnetic north is world +y (ENU)
-            yaw_mag = math.atan2(level[1], level[0])          # angle of field in levelled body frame
-            heading_from_mag = math.pi / 2 - yaw_mag           # body heading that puts north at +y
-            e = (heading_from_mag - yaw_true + math.pi) % (2 * math.pi) - math.pi
-            heading_err.append(math.degrees(e))
-        world = np.array(world).mean(0)
-        total = np.linalg.norm(world)
-        dip = math.degrees(math.atan2(-world[2], math.hypot(world[0], world[1])))
-        decl = math.degrees(math.atan2(world[0], world[1]))
-        print(f'  body field        {np.round(b * 1e6, 2)} uT (last)')
-        print(f'  in world frame    {np.round(world * 1e6, 2)} uT (ENU)')
-        print(f'  total {total * 1e6:.1f} uT, dip {dip:.1f} deg, declination {decl:+.1f} deg'
-              f'  (UK roughly: 48-50 uT, dip about 66 deg, declination near 0)')
-        print(f'  heading error     mean {np.mean(heading_err):+.2f} deg (should be about the size of the declination)')
+            world.append(R.apply(b))
+            ypr = R.as_euler('ZYX')
+            level = Rotation.from_euler('ZYX', [0, ypr[1], ypr[2]]).apply(b)
+            heading_from_mag = math.pi / 2 - math.atan2(level[1], level[0])
+            heading_err.append(math.degrees((heading_from_mag - ypr[0] + math.pi) % (2 * math.pi) - math.pi))
+        w = np.array(world).mean(0)
+        dip = math.degrees(math.atan2(-w[2], math.hypot(w[0], w[1])))
+        decl = math.degrees(math.atan2(w[0], w[1]))
+        print(f'  world frame        {np.round(w * 1e6, 2)} uT (ENU), total {np.linalg.norm(w) * 1e6:.1f} uT')
+        print(f'  dip {dip:.1f} deg, declination {decl:+.1f} deg, heading error {np.mean(heading_err):+.2f} deg')
+        print('  (southern England: about 48-50 uT, dip about 66 deg, declination near 0)')
 
     print('\nrangefinder vs height along the beam')
-    if d['range']:
-        r = np.array([m.range for m in d['range']])
+    rng = usable('range')
+    if rng:
+        r = np.array([m.range for m in rng])
         finite = np.isfinite(r)
         exp = []
-        for m in d['range']:
-            g = gt_at(gt_t, d['gt'], stamp(m))
-            R = gt_rot(g)
-            pos = gt_pos(g) + R.apply([0, 0, RANGE_OFFSET_Z])
+        for m in rng:
+            g = gt_at(stamp(m))
+            R = rot(g)
+            p = pos(g) + R.apply([0, 0, RANGE_OFFSET_Z])
             down = R.apply([0, 0, -1])
-            exp.append(pos[2] / -down[2] if down[2] < -0.1 else math.inf)
+            exp.append(p[2] / -down[2] if down[2] < -0.1 else math.inf)
         exp = np.array(exp)
-        print(f'  readings          {finite.sum()} in range, {(~finite).sum()} out of range '
-              f'(min {d["range"][-1].min_range:.2f} m, max {d["range"][-1].max_range:.1f} m)')
-        print(f'  expected now      {exp[-1]:.3f} m (sensor height along beam)')
+        print(f'  readings           {finite.sum()} in range, {(~finite).sum()} out of range')
         if finite.any():
-            err = r[finite] - exp[finite]
-            print(f'  error             mean {err.mean():+.3f} m, max |error| {np.abs(err).max():.3f} m')
+            e = r[finite] - exp[finite]
+            print(f'  error              mean {e.mean():+.3f} m, max |{np.abs(e).max():.3f}| m')
 
 
 if __name__ == '__main__':

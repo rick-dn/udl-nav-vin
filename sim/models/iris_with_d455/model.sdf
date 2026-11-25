@@ -1,0 +1,158 @@
+<?xml version='1.0'?>
+<sdf version="1.9">
+  <!--
+    iris_with_ardupilot carrying what the real drone will carry:
+
+      - an Intel RealSense D455, used mono: its left IR camera and its IMU,
+        published on the topics the realsense2_camera driver uses
+        (/camera/camera/infra1/..., /camera/camera/imu)
+      - a downward rangefinder wired to the companion computer
+        (/rangefinder/range)
+
+    Magnetometer, barometer and GNSS come from ArduPilot itself via MAVROS,
+    as on the real drone, so they aren't on this model.
+
+    Differences from the real D455, on purpose or for now:
+      - the IMU sits at the body origin, not inside the camera housing, so it
+        lines up with the ground truth pose used for scoring; the camera is
+        10 cm forward and 5 cm down from it
+      - the IMU axes are the body's (x forward, y left, z up); the real D455
+        IMU uses the camera's optical axes, which the rig config handles
+      - perfect sensors; noise is added on replay (faults/realistic.yaml)
+
+    The older models (iris_with_vio_camera, iris_with_vio_sensors) are kept
+    unchanged so their recorded flights stay valid.
+  -->
+  <model name="iris_with_d455">
+    <include>
+      <uri>model://iris_with_ardupilot</uri>
+    </include>
+
+    <!--
+      D455 left IR camera: global shutter, mono8, 640x360 at 30 fps (a
+      standard D455 IR mode, chosen over 848x480 because OpenVINS couldn't
+      keep up with 848x480 at full speed on the laptop, and the Orin Nano is
+      slower), about 87 deg horizontal field of view.
+      Gazebo publishes camera_info next to the image topic, here
+      /camera/camera/infra1/camera_info, as the RealSense driver does.
+    -->
+    <link name='d455_link'>
+      <pose>0.1 0 -0.05 0 0 0</pose>
+      <inertial>
+        <mass>0.01</mass>
+        <inertia>
+          <ixx>0.000001</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.000001</iyy>
+          <iyz>0</iyz>
+          <izz>0.000001</izz>
+        </inertia>
+      </inertial>
+      <sensor name="d455_infra1" type="camera">
+        <pose>0 0 0 0 0 0</pose>
+        <camera>
+          <horizontal_fov>1.518436</horizontal_fov> <!-- 87 degrees -->
+          <image>
+            <width>640</width>
+            <height>360</height>
+            <format>L8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>100</far>
+          </clip>
+        </camera>
+        <always_on>1</always_on>
+        <update_rate>30</update_rate>
+        <visualize>true</visualize>
+        <topic>/camera/camera/infra1/image_rect_raw</topic>
+      </sensor>
+    </link>
+    <joint name='d455_joint' type='fixed'>
+      <parent>iris_with_ardupilot::iris_with_standoffs::base_link</parent>
+      <child>d455_link</child>
+    </joint>
+
+    <!-- D455 IMU stand-in, 200 Hz, at the body origin with body axes -->
+    <link name='d455_imu_link'>
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>0.000001</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>0.000001</iyy>
+          <iyz>0</iyz>
+          <izz>0.000001</izz>
+        </inertia>
+      </inertial>
+      <sensor name="d455_imu" type="imu">
+        <pose>0 0 0 0 0 0</pose>
+        <always_on>1</always_on>
+        <update_rate>200</update_rate>
+        <topic>/camera/camera/imu</topic>
+      </sensor>
+    </link>
+    <joint name='d455_imu_joint' type='fixed'>
+      <parent>iris_with_ardupilot::iris_with_standoffs::base_link</parent>
+      <child>d455_imu_link</child>
+    </joint>
+
+    <!--
+      Downward rangefinder on the companion computer: one-beam gpu_lidar,
+      0.10 m below base_link, 0.12-8 m (reads out of range when landed).
+      The Gazebo scan is turned into sensor_msgs/Range by gz_range_bridge.py.
+    -->
+    <link name="rangefinder_link">
+      <pose>0 0 -0.10 0 0 0</pose>
+      <inertial>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>1e-6</ixx>
+          <iyy>1e-6</iyy>
+          <izz>1e-6</izz>
+        </inertia>
+      </inertial>
+      <sensor name="rangefinder" type="gpu_lidar">
+        <!-- pitch +90 deg points the beam (sensor +x) straight down -->
+        <pose degrees="true">0 0 0 0 90 0</pose>
+        <topic>/rangefinder/scan</topic>
+        <update_rate>20</update_rate>
+        <always_on>1</always_on>
+        <visualize>0</visualize>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>1</samples>
+              <resolution>1</resolution>
+              <min_angle>0</min_angle>
+              <max_angle>0</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.12</min>
+            <max>8.0</max>
+            <resolution>0.01</resolution>
+          </range>
+        </lidar>
+      </sensor>
+    </link>
+    <joint name="rangefinder_joint" type="fixed">
+      <parent>iris_with_ardupilot::iris_with_standoffs::base_link</parent>
+      <child>rangefinder_link</child>
+    </joint>
+
+    <!-- Ground truth for scoring only; the /sim prefix marks it as not real -->
+    <plugin filename="gz-sim-odometry-publisher-system"
+            name="gz::sim::systems::OdometryPublisher">
+      <odom_frame>world</odom_frame>
+      <robot_base_frame>iris_with_d455</robot_base_frame>
+      <odom_publish_frequency>100</odom_publish_frequency>
+      <odom_topic>/sim/ground_truth/odom</odom_topic>
+      <dimensions>3</dimensions>
+    </plugin>
+
+  </model>
+</sdf>

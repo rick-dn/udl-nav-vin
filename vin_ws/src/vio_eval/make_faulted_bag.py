@@ -84,7 +84,10 @@ def main():
             msg = deserialize_message(data, typ)
             if topic == '/mavros/state':
                 writer.write(topic, data, ts)        # copied as is, and seen by the engine
-            getattr(engine, method)(msg)
+            if topic == '/mavros/state':
+                engine.on_state(msg)
+            else:
+                getattr(engine, method)(msg, topic)
         else:
             writer.write(topic, data, ts)
         count += 1

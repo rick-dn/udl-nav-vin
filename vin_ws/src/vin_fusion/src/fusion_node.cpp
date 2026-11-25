@@ -13,6 +13,13 @@ public:
             "/vio/imu", 200,
             std::bind(&FusionNode::on_imu, this, std::placeholders::_1)
         );
+
+        vio_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped> (
+            "/ov_msckf/poseimu", 50,
+            std::bind(&FusionNode::on_vio, this, std::placeholders::_1)
+        );
+
+
     };
 private:
     void on_imu(const sensor_msgs::msg::Imu::SharedPtr msg) {
@@ -26,14 +33,40 @@ private:
 
         s.accel = Eigen::Vector3d(msg->linear_acceleration.x,
                                   msg->linear_acceleration.y,
-                                  msg->linear_acceleration.z);
+                                  msg->linear_acceleration.z
+                );
 
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
             "imu t=%.3f gyro=[%.3f %.3f %.3f] accel=[%.3f %.3f %.3f]",
             s.t, s.gyro.x(), s.gyro.y(), s.gyro.z(),
             s.accel.x(), s.accel.y(), s.accel.z());
     }
+
+    void on_vio(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg) {
+        VioPose v;
+        v.t = msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
+        v.p = Eigen::Vector3d(msg->pose.pose.position.x,
+                              msg->pose.pose.position.y,
+                              msg->pose.pose.position.z);
+        v.q = Eigen::Quaterniond(msg->pose.pose.orientation.w,
+                                 msg->pose.pose.orientation.x,
+                                 msg->pose.pose.orientation.y,
+                                 msg->pose.pose.orientation.z);
+        v.cov = Eigen::Map<const Eigen::Matrix<double, 6, 6, Eigen::RowMajor>>(
+            msg->pose.covariance.data());
+
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+        "vio t=%.3f p=[%.2f %.2f %.2f] q=[%.3f %.3f %.3f %.3f] "
+        "sigma_xyz=[%.3f %.3f %.3f]",
+        v.t, v.p.x(), v.p.y(), v.p.z(),
+        v.q.w(), v.q.x(), v.q.y(), v.q.z(),
+        std::sqrt(v.cov(0,0)), std::sqrt(v.cov(1, 1)), std::sqrt(v.cov(2,2)));
+    
+                                                                 
+    }
+
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr vio_sub_;
 };
 
 int main(int argc, char ** argv) {

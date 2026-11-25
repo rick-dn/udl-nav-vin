@@ -43,15 +43,20 @@ def load_tum(path):
 
 
 def disarm_time(events_path):
-    """Time of the first disarm that follows an arm, or None."""
-    was_armed = False
-    with open(events_path) as f:
-        for row in csv.DictReader(f):
-            armed = row['armed'] == '1'
-            if armed:
-                was_armed = True
-            elif was_armed:
-                return float(row['t'])
+    """Time of the disarm that follows the last arm, or None.
+
+    The last arm, not the first: a bag recorded right after another flight
+    can start with that flight's leftover 'armed' state and its disarm."""
+    rows = list(csv.DictReader(open(events_path)))
+    last_arm = None
+    for i, row in enumerate(rows):
+        if row['armed'] == '1' and (i == 0 or rows[i - 1]['armed'] != '1'):
+            last_arm = i
+    if last_arm is None:
+        return None
+    for row in rows[last_arm + 1:]:
+        if row['armed'] != '1':
+            return float(row['t'])
     return None
 
 

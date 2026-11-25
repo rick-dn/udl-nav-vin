@@ -1,0 +1,25 @@
+%YAML:1.0
+# D455 left IR camera stand-in on iris_with_d455 (iris_warehouse_d455.sdf),
+# mono only. Values come from the Gazebo model, not from a calibration; on the
+# real D455 they come from Kalibr (or the factory intrinsics on camera_info):
+#   - 640x360, 87 deg horizontal FOV -> fx = fy = 320 / tan(43.5 deg) = 337.21,
+#     cx = 320, cy = 180
+#   - perfect pinhole, no distortion
+#   - camera link at 0.1 m forward, 0.05 m down from base_link; the IMU
+#     stand-in sits at base_link with the body axes (x forward, y left, z up)
+#   - Gazebo camera looks along link +x; OpenVINS camera frame is z forward,
+#     x right, y down, so R_CtoI columns are: x_C = -y_I, y_C = -z_I, z_C = x_I
+
+cam0:
+  T_imu_cam: #rotation from camera to IMU R_CtoI, position of camera in IMU p_CinI
+    - [0.0, 0.0, 1.0, 0.10]
+    - [-1.0, 0.0, 0.0, 0.0]
+    - [0.0, -1.0, 0.0, -0.05]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: []
+  camera_model: pinhole
+  distortion_coeffs: [0.0, 0.0, 0.0, 0.0]
+  distortion_model: radtan
+  intrinsics: [337.2097, 337.2097, 320.0, 180.0] #fu, fv, cu, cv
+  resolution: [640, 360]
+  rostopic: /camera/camera/infra1/image_rect_raw

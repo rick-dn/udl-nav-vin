@@ -7,12 +7,11 @@ runs it offline to write a faulted copy of the bag, which replays exactly the
 same every time (replay_run.sh --faults does this). Run this file directly
 for live use, where it sits between the sensors and the estimator:
 
-  /vio/raw/imu            -> [faults] -> /vio/imu
-  /vio/raw/camera/image   -> [faults] -> /vio/camera/image
-  /vio/raw/gnss/fix, vel  -> [faults] -> /vio/gnss/fix, /vio/gnss/vel
-  /vio/raw/mag            -> [faults] -> /vio/mag
-  /vio/raw/baro           -> [faults] -> /vio/baro
-  /vio/raw/range          -> [faults] -> /vio/range
+  /raw<topic>  -> [faults] -> <topic>
+
+for every topic in HANDLERS: the real-setup names (D455 camera and IMU,
+rangefinder, ArduPilot's mag / baro / GNSS via MAVROS) and the older /vio
+sim names.
 
 Ground truth and MAVROS topics don't go through it.
 
@@ -221,7 +220,7 @@ class FaultEngine:
 
     # --- IMU
 
-    def on_imu(self, msg):
+    def on_imu(self, msg, topic='/vio/imu'):
         t = stamp_to_sec(msg.header.stamp)
         self.sim_now = t
         a = np.array([msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z])
@@ -263,23 +262,23 @@ class FaultEngine:
 
         msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z = a.tolist()
         msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z = w.tolist()
-        self.emit('/vio/imu', msg, None)
+        self.emit(topic, msg, None)
 
     # --- camera
 
-    def on_image(self, msg):
+    def on_image(self, msg, topic='/vio/camera/image'):
         t = stamp_to_sec(msg.header.stamp)
         faults = self.active_faults(t, 'image')
         if not faults:
             self.last_good_image = msg
-            self.emit('/vio/camera/image', msg, None)
+            self.emit(topic, msg, None)
             return
 
         if msg.encoding != 'mono8':
             if not self.warned_encoding:
                 self.warn(f'image encoding {msg.encoding}, only mono8 is handled; passing through')
                 self.warned_encoding = True
-            self.emit('/vio/camera/image', msg, None)
+            self.emit(topic, msg, None)
             return
 
         img = None   # pixels, only unpacked if a fault needs them
@@ -328,7 +327,7 @@ class FaultEngine:
             img = np.clip(np.rint(img), 0, 255).astype(np.uint8)
             out.step = msg.width
             out.data = img.tobytes()
-        self.emit('/vio/camera/image', out, None)
+        self.emit(topic, out, None)
 
     @staticmethod
     def pixels(msg):
@@ -339,7 +338,7 @@ class FaultEngine:
     def gnss_delay(self, faults):
         return sum(float(f.p.get('delay_s', 0.0)) for f in faults if f.type == 'gnss_delay')
 
-    def on_fix(self, msg):
+    def on_fix(self, msg, topic='/vio/gnss/fix'):
         t = stamp_to_sec(msg.header.stamp)
         faults = self.active_faults(t, 'gnss')
         e = n = u = 0.0          # position error, metres east / north / up
@@ -373,9 +372,9 @@ class FaultEngine:
             msg.latitude += math.degrees(n / EARTH_RADIUS)
             msg.longitude += math.degrees(e / (EARTH_RADIUS * math.cos(lat)))
             msg.altitude += u
-        self.send_gnss('/vio/gnss/fix', msg, t, self.gnss_delay(faults))
+        self.send_gnss(topic, msg, t, self.gnss_delay(faults))
 
-    def on_vel(self, msg):
+    def on_vel(self, msg, topic='/vio/gnss/vel'):
         t = stamp_to_sec(msg.header.stamp)
         faults = self.active_faults(t, 'gnss')
         v = msg.twist.linear
@@ -393,23 +392,23 @@ class FaultEngine:
                 v.x += float(p.get('east_rate', 0.0))
                 v.y += float(p.get('north_rate', 0.0))
                 v.z += float(p.get('up_rate', 0.0))
-        self.send_gnss('/vio/gnss/vel', msg, t, self.gnss_delay(faults))
+        self.send_gnss(topic, msg, t, self.gnss_delay(faults))
 
     def send_gnss(self, topic, msg, t, delay):
         self.emit(topic, msg, t + delay if delay > 0 else None)
 
     # --- magnetometer, barometer, rangefinder
 
-    def on_mag(self, msg):
+    def on_mag(self, msg, topic='/vio/mag'):
         t = stamp_to_sec(msg.header.stamp)
         m = msg.magnetic_field
         for f in self.active_faults(t, 'mag'):
             f.count += 1
             d = vec(f.p, 'bias') + f.rng.normal(0.0, float(f.p.get('sigma', 0.0)), 3)
             m.x, m.y, m.z = m.x + d[0], m.y + d[1], m.z + d[2]
-        self.emit('/vio/mag', msg, None)
+        self.emit(topic, msg, None)
 
-    def on_baro(self, msg):
+    def on_baro(self, msg, topic='/vio/baro'):
         t = stamp_to_sec(msg.header.stamp)
         for f in self.active_faults(t, 'baro'):
             f.count += 1
@@ -418,9 +417,9 @@ class FaultEngine:
                 f.last_t = t
             f.state += float(f.p.get('drift_rate', 0.0)) * f.dt(t)
             msg.fluid_pressure += f.state + f.rng.normal(0.0, float(f.p.get('sigma', 0.0)))
-        self.emit('/vio/baro', msg, None)
+        self.emit(topic, msg, None)
 
-    def on_range(self, msg):
+    def on_range(self, msg, topic='/vio/range'):
         t = stamp_to_sec(msg.header.stamp)
         for f in self.active_faults(t, 'range'):
             if not math.isfinite(msg.range):
@@ -431,7 +430,7 @@ class FaultEngine:
             else:
                 msg.range += f.rng.normal(0.0, float(f.p.get('sigma', 0.0)))
                 msg.range = float(min(max(msg.range, msg.min_range), msg.max_range))
-        self.emit('/vio/range', msg, None)
+        self.emit(topic, msg, None)
 
     def close(self):
         for f in self.faults:
@@ -439,9 +438,20 @@ class FaultEngine:
         self.log.close()
 
 
-# Input topic for each engine handler. Live, they arrive under /vio/raw/...;
-# offline they're read from the bag under their normal names.
+# Input topic for each engine handler, for both setups: the real-setup names
+# used by the D455 copy of the sim (and the real drone), and the older /vio
+# sim. Output goes back out on the same topic name. Live, inputs arrive with a
+# /raw prefix; offline they're read from the bag as they are.
 HANDLERS = {
+    # real setup: RealSense D455, rangefinder, ArduPilot via MAVROS
+    '/camera/camera/imu': ('on_imu', Imu),
+    '/camera/camera/infra1/image_rect_raw': ('on_image', Image),
+    '/mavros/global_position/raw/fix': ('on_fix', NavSatFix),
+    '/mavros/global_position/raw/gps_vel': ('on_vel', TwistStamped),
+    '/mavros/imu/mag': ('on_mag', MagneticField),
+    '/mavros/imu/static_pressure': ('on_baro', FluidPressure),
+    '/rangefinder/range': ('on_range', Range),
+    # older sim
     '/vio/imu': ('on_imu', Imu),
     '/vio/camera/image': ('on_image', Image),
     '/vio/gnss/fix': ('on_fix', NavSatFix),
@@ -454,7 +464,7 @@ HANDLERS = {
 
 
 class FaultInjectorNode(Node):
-    """Live front end: subscribes to /vio/raw/*, publishes the normal topics.
+    """Live front end: subscribes to /raw<topic>, publishes on <topic>.
     For recorded flights use make_faulted_bag.py instead, which is repeatable;
     live, message timing varies from run to run."""
 
@@ -466,11 +476,17 @@ class FaultInjectorNode(Node):
             return QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                               history=HistoryPolicy.KEEP_LAST, depth=depth)
 
-        depths = {'/vio/imu': 500, '/vio/camera/image': 50, '/vio/mag': 100, '/vio/baro': 100}
+        def depth(topic):
+            if topic.endswith('imu'):
+                return 500
+            if 'image' in topic:
+                return 50
+            return 100
+
         self.pubs = {}
         for topic, (_, typ) in HANDLERS.items():
             if topic != '/mavros/state':
-                self.pubs[topic] = self.create_publisher(typ, topic, qos(depths.get(topic, 50)))
+                self.pubs[topic] = self.create_publisher(typ, topic, qos(depth(topic)))
 
         self.engine = FaultEngine(seed, fault_specs, log_path, self.emit,
                                   self.get_logger().info, self.get_logger().warn)
@@ -478,21 +494,22 @@ class FaultInjectorNode(Node):
         for topic, (method, typ) in HANDLERS.items():
             if topic == '/mavros/state':
                 continue
-            handler = getattr(self.engine, method)
-            if topic == '/vio/imu':
-                handler = self.on_imu       # IMU time also releases delayed GNSS
-            self.create_subscription(typ, '/vio/raw' + topic, handler, qos(depths.get(topic, 50)))
+            if method == 'on_imu':
+                cb = (lambda m, tp=topic: self.on_imu(m, tp))   # also releases delayed GNSS
+            else:
+                cb = (lambda m, f=getattr(self.engine, method), tp=topic: f(m, tp))
+            self.create_subscription(typ, '/raw' + topic, cb, qos(depth(topic)))
 
         state_qos = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                                durability=DurabilityPolicy.TRANSIENT_LOCAL,
                                history=HistoryPolicy.KEEP_LAST, depth=10)
         self.create_subscription(State, '/mavros/state', self.engine.on_state, state_qos)
 
-    def on_imu(self, msg):
+    def on_imu(self, msg, topic):
         while self.delayed and self.delayed[0][0] <= stamp_to_sec(msg.header.stamp):
             _, topic, m = self.delayed.popleft()
             self.pubs[topic].publish(m)
-        self.engine.on_imu(msg)
+        self.engine.on_imu(msg, topic)
 
     def emit(self, topic, msg, release_t):
         if release_t is None:
